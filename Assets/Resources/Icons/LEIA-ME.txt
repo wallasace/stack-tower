@@ -1,0 +1,2 @@
+x.png e github.png: Simple Icons (https://simpleicons.org), licenca CC0 1.0.
+Logos sao marcas de X Corp. e GitHub, Inc.; usados apenas para linkar perfis.
