@@ -1,8 +1,9 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-// Stack Tower: toque para soltar o bloco. O que passar da borda é cortado.
-// 3 acertos perfeitos seguidos fazem o bloco crescer de novo.
+// Stack Tower — reskin "Toybox World": tábuas de madeira pintada empilhadas num mundo de brinquedo.
+// Toque para soltar o bloco. O que passar da borda é cortado.
+// 3 acertos perfeitos seguidos fazem o bloco crescer de novo. Jogabilidade idêntica à original.
 public class StackGame : MonoBehaviour, IGame
 {
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -13,23 +14,22 @@ public class StackGame : MonoBehaviour, IGame
     }
 
     const float BlockH = 0.5f;
+    const float BlockDepth = 0.9f;  // profundidade das tábuas
+    const float Bevel = 0.09f;      // chanfro suave das arestas
     const float Range = 4f;
     const float StartWidth = 3f;
     const float PerfectTolerance = 0.12f;
-    const float CamSize = 8f;
-    const float MenuCamY = -4.5f;   // no menu a torre fica no meio da tela
     const float BaseTop = -3f;
     const int BaseBlocks = 6;
     const float BaseStep = 0.45f;   // quanto cada bloco da base é mais largo que o de cima
 
-
-    static readonly Color Mint = new Color(0.37f, 0.9f, 0.71f);
+    // Câmera em perspectiva frontal
+    const float FieldOfView = 35f;
 
     Camera cam;
-    Sprite blockSprite;
     Transform prev, cur;
-    SpriteRenderer trail;
     float curWidth, speed, dir;
+    
 
     int score, combo, startFrame;
     readonly List<GameObject> spawned = new List<GameObject>();
@@ -37,12 +37,15 @@ public class StackGame : MonoBehaviour, IGame
     void Start()
     {
         Application.targetFrameRate = 60;
-        cam = Util.SetupCamera(CamSize);
-        blockSprite = Util.Block();
+        cam = Util.SetupCamera(8f);
+        cam.orthographic = false;
+        cam.fieldOfView = FieldOfView;
+        cam.nearClipPlane = 0.3f;
+        cam.farClipPlane = 300f;
 
-        BuildFloor();
-
-        trail = Util.MakeSprite("Trail", Util.HGradient(), Color.clear, Vector3.zero, new Vector2(2.4f, BlockH * 0.8f / 0.25f), -1); // sprite tem 0,25 de altura
+        ToyWorld.Build(cam, FloorY);
+        Vfx.FloorY = FloorY;
+        Shell.OnNewRecord = () => Vfx.Confetti(cam);
 
         Shell.Create(this, new ShellTheme
         {
@@ -57,18 +60,18 @@ public class StackGame : MonoBehaviour, IGame
             author = "wallasace",
             xHandle = "wall_as_ace",
             gitHubUser = "wallasace",
-            accent = Mint,
+            accent = ToyWorld.Mint,
             brandBlocks = new[] { Palette[0], Palette[1], Palette[2], Palette[3], Palette[5], Palette[6] },
         });
-        // Clima relaxado: Lá menor - Fá - Dó - Sol, 100 bpm
         Music.Play(new Music.Style
         {
-            bpm = 100,
-            chordRoots = new[] { 57, 53, 60, 55 },
-            minor = new[] { true, false, false, false },
-            seed = 7,
-            busyHats = false,
-            volume = 0.35f,
+            // Trilha de brinquedo: Dó - Sol - Lá menor - Fá - Dó - Sol - Fá - Sol, 104 bpm, 16 compassos
+            toy = true,
+            bpm = 104,
+            chordRoots = new[] { 60, 55, 57, 53, 60, 55, 53, 55 },
+            minor = new[] { false, false, true, false, false, false, false, false },
+            seed = 12,
+            volume = 0.42f,
         });
     }
 
@@ -76,9 +79,10 @@ public class StackGame : MonoBehaviour, IGame
     {
         foreach (var g in spawned) if (g) Destroy(g);
         spawned.Clear();
+        blockColors.Clear();
         score = 0; combo = 0; speed = 3f; curWidth = StartWidth;
 
-        // Base em degraus, mais larga embaixo; a cor sobe do roxo
+        // Base em degraus, mais larga embaixo; a cor sobe do roxo ao azul
         for (int i = 0; i <= BaseBlocks; i++)
         {
             int fromTop = BaseBlocks - i;
@@ -86,10 +90,9 @@ public class StackGame : MonoBehaviour, IGame
             if (i == BaseBlocks) prev = b;
         }
         cur = null;
-        trail.color = Color.clear;
         camMode = CamMode.Menu;
-        cam.orthographicSize = FitSize;
-        cam.transform.position = new Vector3(0, MenuCamY, -10);
+        TargetCamera(out camEye, out camDist, out camPitch);
+        PlaceCamera();
     }
 
     public void Begin()
@@ -99,130 +102,104 @@ public class StackGame : MonoBehaviour, IGame
         Spawn();
     }
 
-    // ---------- Câmera responsiva ----------
-    // A câmera mostra pelo menos CamSize de altura e, em telas estreitas, se afasta
-    // até caber o vaivém inteiro do bloco (Range + metade do bloco + margem).
+    // ---------- Câmera responsiva (enquadramento da referência) ----------
+    // Na partida a câmera fica rente à mesa, olhando um pouco para cima: torre grande no centro,
+    // céu ocupando a maior parte da tela e o chão só como uma faixa embaixo.
+    // Em telas estreitas ela se afasta até caber o vaivém inteiro do bloco.
     // Recalculada todo quadro: acompanha girar o celular e redimensionar o navegador.
 
     enum CamMode { Menu, Play, Over }
     CamMode camMode;
     float overTop, overBottom;
+    float camEye, camDist, camPitch;
 
     const float SideMargin = 0.6f;
     const float FloorY = BaseTop - (BaseBlocks + 0.5f) * BlockH;
+    const float BaseDistance = 15f;     // distância da torre em telas largas (como na referência)
+    const float PlayPitchUp = 12f;      // olha para cima: horizonte bem baixo, muito céu
+    const float EyeAboveFloor = 0.7f;   // olho quase na altura da mesa
+    const float EyeBelowTop = 2.8f;     // conforme a torre sobe, a câmera acompanha o topo
 
-    float FitSize => Mathf.Max(CamSize, (Range + StartWidth / 2f + SideMargin) / Mathf.Max(cam.aspect, 0.01f));
+    float TanHalfFov => Mathf.Tan(FieldOfView * 0.5f * Mathf.Deg2Rad);
 
-    void TargetCamera(out float y, out float size)
+    // Distância mínima para o vaivém do bloco caber na largura da tela
+    float FitDistance =>
+        Mathf.Max(BaseDistance, (Range + StartWidth / 2f + SideMargin) / (TanHalfFov * Mathf.Max(cam.aspect, 0.01f)));
+
+    void TargetCamera(out float eye, out float dist, out float pitch)
     {
-        size = FitSize;
+        dist = FitDistance;
         switch (camMode)
         {
             case CamMode.Menu:
-                y = MenuCamY; // torre no meio da tela
+                // Menu: olhar reto para o meio da torre (título acima, botões abaixo)
+                // Torre um pouco menor e levemente abaixo do centro: cabe entre o selo BEST e o botão PLAY
+                dist *= 1.55f;
+                eye = BaseTop - BaseBlocks * BlockH / 2f + 0.1f * dist * TanHalfFov;
+                pitch = 0f;
                 break;
             case CamMode.Play:
-                // Bloco do topo a ~44% da altura; no começo, o chão a ~11% da altura
-                y = Mathf.Max(FloorY + 0.78f * size, prev.position.y + 0.12f * size);
+                eye = Mathf.Max(FloorY + EyeAboveFloor, prev.position.y - EyeBelowTop);
+                pitch = -PlayPitchUp;
                 break;
             default:
-                // Fim de jogo: afasta para mostrar a torre inteira
-                size = Mathf.Max(size, (overTop - overBottom) / 2f + 2f);
-                y = (overTop + overBottom) / 2f;
+                // Fim de jogo: afasta e olha reto para mostrar a torre inteira
+                eye = (overTop + overBottom) / 2f;
+                pitch = 0f;
+                dist = Mathf.Max(dist, ((overTop - overBottom) / 2f + 2f) / TanHalfFov);
                 break;
         }
+    }
+
+    void PlaceCamera()
+    {
+        cam.transform.rotation = Quaternion.Euler(camPitch, 0f, 0f);
+        cam.transform.position = new Vector3(0f, camEye, -camDist);
     }
 
     int Level => BaseBlocks + score + 1;
 
-    // Paleta da referência, de baixo para cima; as cores intermediárias são misturadas
+    // Cores da referência, de baixo para cima (colors_bottom_to_top)
     static readonly Color[] Palette =
     {
-        new Color(0.62f, 0.38f, 1.00f), // roxo
-        new Color(1.00f, 0.38f, 0.74f), // rosa
-        new Color(1.00f, 0.55f, 0.42f), // coral
-        new Color(1.00f, 0.87f, 0.33f), // amarelo
-        new Color(0.58f, 0.93f, 0.44f), // verde
-        new Color(0.30f, 0.89f, 0.82f), // turquesa
-        new Color(0.33f, 0.67f, 1.00f), // azul
+        ToyWorld.Purple, ToyWorld.Pink, ToyWorld.Coral, ToyWorld.Yellow,
+        ToyWorld.Grass, ToyWorld.Mint, ToyWorld.Royal,
     };
-    const float PaletteStep = 0.9f; // quanto da paleta cada bloco avança
 
+    // Um tom por bloco, como na torre da referência; depois do azul, volta suave ao roxo
     static Color ColorFor(int level)
     {
-        float p = Mathf.Repeat(level * PaletteStep, Palette.Length);
+        float p = Mathf.Repeat(level, Palette.Length);
         int i = (int)p;
         return Color.Lerp(Palette[i], Palette[(i + 1) % Palette.Length], p - i);
     }
 
-    // Chão: linha de luz, halo roxo e reflexo esmaecido dos dois blocos de baixo
-    void BuildFloor()
-    {
-        float floorY = BaseTop - (BaseBlocks + 0.5f) * BlockH;
-        float bottomW = StartWidth + BaseBlocks * BaseStep;
-
-        Util.MakeSprite("FloorHalo", Util.Glow(), new Color(0.5f, 0.35f, 1f, 0.35f),
-            new Vector3(0, floorY, 0), new Vector2(bottomW + 4f, 1.6f), -3);
-        Util.MakeSprite("FloorLine", Util.Glow(), new Color(0.75f, 0.6f, 1f, 0.55f),
-            new Vector3(0, floorY - 0.02f, 0), new Vector2(bottomW + 2.5f, 0.12f), -2);
-
-        for (int i = 0; i < 2; i++)
-        {
-            float w = StartWidth + (BaseBlocks - i) * BaseStep;
-            var c = ColorFor(i);
-            c.a = i == 0 ? 0.32f : 0.12f;
-            // VFade é opaco em cima: forte junto ao chão, some para baixo
-            Util.MakeSprite("Reflection", Util.VFade(), c,
-                new Vector3(0, floorY - (i + 0.5f) * BlockH, 0), new Vector2(w / 0.125f, BlockH * 0.95f), -2);
-        }
-    }
-
     Transform Block(float x, float y, float w, int level)
     {
-        var color = ColorFor(level);
-        var sr = Util.MakeSprite("Block", blockSprite, color, new Vector3(x, y, 0), Vector2.one);
-        sr.drawMode = SpriteDrawMode.Sliced;
-        sr.size = new Vector2(w, BlockH);
-
-        // "Backlight": cópia menor e bem desfocada do bloco, um pouco abaixo dele,
-        // como uma luz da cor do bloco atrás (equivale a scale + blur + top deslocado no CSS).
-        // Valores em Tools > Ajustes Visuais.
-        var glow = Util.MakeSprite("Backlight", null, color, sr.transform.position, Vector2.one, -1);
-        glow.drawMode = SpriteDrawMode.Sliced;
-        glow.transform.SetParent(sr.transform, true);
-        ApplyBacklight(sr.transform);
-
-        spawned.Add(sr.gameObject);
-        return sr.transform;
+        var go = new GameObject("Block");
+        go.transform.position = new Vector3(x, y, 0f);
+        go.AddComponent<MeshFilter>();
+        go.AddComponent<OwnedMesh>();
+        var mr = go.AddComponent<MeshRenderer>();
+        mr.sharedMaterial = ToyWorld.WoodMaterial;
+        mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+        mr.receiveShadows = true;
+        blockColors[go] = ColorFor(level);
+        SetWidth(go.transform, w);
+        spawned.Add(go);
+        return go.transform;
     }
 
-    static void ApplyBacklight(Transform block)
-    {
-        var s = VisualSettings.I;
-        var glow = block.GetChild(0).GetComponent<SpriteRenderer>();
-        float w = block.GetComponent<SpriteRenderer>().size.x;
-        var c = block.GetComponent<SpriteRenderer>().color;
-        glow.sprite = Util.Backlight(s.blockGlowBlur);
-        glow.color = new Color(c.r, c.g, c.b, s.blockGlowAlpha);
-        glow.size = new Vector2(w * s.blockGlowScale + s.blockGlowBlur * 2f,
-                                BlockH * s.blockGlowScale + s.blockGlowBlur * 2f);
-        glow.transform.localPosition = new Vector3(0, -s.blockGlowDrop, 0);
-    }
+    readonly Dictionary<GameObject, Color> blockColors = new Dictionary<GameObject, Color>();
 
-    // Reaplica o brilho em todos os blocos quando os ajustes mudam no Inspector
-    int settingsVersion = -1;
+    Color ColorOf(Transform t) => blockColors.TryGetValue(t.gameObject, out var c) ? c : Color.white;
 
-    void RefreshBacklightsIfChanged()
+    // Troca a malha pela caixa arredondada da nova largura (o chanfro não se deforma com escala)
+    void SetWidth(Transform t, float w)
     {
-        if (settingsVersion == VisualSettings.Version) return;
-        settingsVersion = VisualSettings.Version;
-        foreach (var g in spawned) if (g) ApplyBacklight(g.transform);
-    }
-
-    static void SetWidth(Transform t, float w)
-    {
-        t.GetComponent<SpriteRenderer>().size = new Vector2(w, BlockH);
-        ApplyBacklight(t);
+        var size = new Vector3(w, BlockH, BlockDepth);
+        t.GetComponent<OwnedMesh>().Set(ToyMeshes.RoundedBox(size, Bevel, 5, cached: false));
+        ToyWorld.Paint(t.GetComponent<MeshRenderer>(), ColorOf(t), size / 2f, t.GetInstanceID() * 0.37f % 10f);
     }
 
     void Spawn()
@@ -233,7 +210,6 @@ public class StackGame : MonoBehaviour, IGame
 
     void Update()
     {
-        RefreshBacklightsIfChanged();
         if (Shell.I.Playing && cur)
         {
             var p = cur.position;
@@ -246,34 +222,26 @@ public class StackGame : MonoBehaviour, IGame
                 Sfx.Play("bounce", Random.Range(0.95f, 1.05f) + (speed - 3f) * 0.02f, 0.6f);
             }
             cur.position = p;
-            UpdateTrail();
             // Ignora o mesmo toque que apertou o botão "Jogar"
             if (Time.frameCount != startFrame && Util.Tapped()) Drop();
         }
 
-        TargetCamera(out float targetY, out float targetSize);
-        var cp = cam.transform.position;
-        cp.y = Mathf.Lerp(cp.y, targetY, 4f * Time.deltaTime);
-        cam.transform.position = cp;
-        cam.orthographicSize = Mathf.Lerp(cam.orthographicSize, targetSize, 3f * Time.deltaTime);
+        TargetCamera(out float targetEye, out float targetDist, out float targetPitch);
+        float k = 1f - Mathf.Exp(-4f * Time.deltaTime);
+        camEye = Mathf.Lerp(camEye, targetEye, k);
+        camDist = Mathf.Lerp(camDist, targetDist, k);
+        camPitch = Mathf.Lerp(camPitch, targetPitch, k);
+        PlaceCamera();
     }
 
-    // Rastro atrás do bloco em movimento, mais forte quanto mais rápido
-    void UpdateTrail()
-    {
-        var c = cur.GetComponent<SpriteRenderer>().color;
-        c.a = Mathf.Lerp(0.25f, 0.5f, (speed - 3f) / 6f);
-        trail.color = c;
-        trail.flipX = dir < 0f;
-        trail.transform.position = cur.position - new Vector3(dir * (curWidth / 2f + 1.2f), 0, 0);
-    }
+    // Ponto na face da frente do bloco (efeitos aparecem na frente da madeira)
+    static Vector3 Front(Vector3 p) => new Vector3(p.x, p.y, -BlockDepth / 2f - 0.05f);
 
     void Drop()
     {
         float dx = cur.position.x - prev.position.x;
         float overlap = curWidth - Mathf.Abs(dx);
-        var color = cur.GetComponent<SpriteRenderer>().color;
-        trail.color = Color.clear;
+        var color = ColorOf(cur);
 
         if (overlap <= 0f)
         {
@@ -292,7 +260,8 @@ public class StackGame : MonoBehaviour, IGame
             float msgY = cam.WorldToViewportPoint(cur.position).y + 0.045f;
             Shell.I.ShowMessage(combo >= 3 ? "PERFECT x" + combo + "!" : "PERFECT!", 0.8f, msgY);
             Sfx.Play("perfect", 1f + Mathf.Min(combo, 10) * 0.06f);
-            Juice.Burst(cur.position + Vector3.up * BlockH * 0.5f, Shell.Gold, 14, 6f, 0.15f);
+            Vfx.Sparkle(cur.position + Vector3.up * BlockH * 0.5f, curWidth, 8 + Mathf.Min(combo, 6) * 2);
+            Vfx.Dust(cur.position - Vector3.up * BlockH * 0.5f, curWidth, 8);
         }
         else
         {
@@ -306,7 +275,11 @@ public class StackGame : MonoBehaviour, IGame
             cur.position = new Vector3(newX, cur.position.y, 0);
             SetWidth(cur, curWidth);
             Sfx.Play("place", 1f + Mathf.Min(score, 30) * 0.01f);
-            Juice.Burst(new Vector3(cutX, cur.position.y, 0), color, 6, 4f, 0.15f);
+            Sfx.Play("cut", Random.Range(0.92f, 1.08f), 0.8f);
+            // Lascas de madeira na cor do bloco
+            // Lascas saem da aresta cortada; serragem na base do bloco que assentou
+            Vfx.WoodChips(new Vector3(newX + Mathf.Sign(dx) * overlap / 2f, cur.position.y, 0), color, Mathf.Sign(dx));
+            Vfx.Dust(cur.position - Vector3.up * BlockH * 0.5f, curWidth);
         }
 
         Juice.Pop(cur, 0.1f, 0.15f);
@@ -319,6 +292,7 @@ public class StackGame : MonoBehaviour, IGame
 
     void MakeFalling(GameObject g)
     {
+        // Física 2D no plano da torre: o pedaço cai e gira, como no jogo original
         var rb = g.AddComponent<Rigidbody2D>();
         rb.gravityScale = 3f;
         rb.angularVelocity = Random.Range(-90f, 90f);

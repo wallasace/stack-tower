@@ -47,5 +47,9 @@ public static class ProjectSetup
 
         // PC: janela redimensionável
         PlayerSettings.resizableWindow = true;
+
+        // Render "AAA": espaço de cor linear (PBR correto, cores definidas com tonemapping ACES)
+        if (PlayerSettings.colorSpace != UnityEngine.ColorSpace.Linear)
+            PlayerSettings.colorSpace = UnityEngine.ColorSpace.Linear;
     }
 }

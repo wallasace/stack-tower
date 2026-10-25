@@ -83,6 +83,9 @@ public static class Util
 
     public enum Weight { Medium, SemiBold, Bold }
 
+    // A Fredoka é arredondada e larga: o espaçamento das telas vale menos do que valia na Barlow
+    const float TrackingScale = 0.45f;
+
     static readonly Font[] fonts = new Font[3];
 
     // Fonte Barlow (Assets/Resources/Fonts). Se faltar o arquivo, cai na fonte padrão do Unity.
@@ -90,7 +93,7 @@ public static class Util
     {
         int i = (int)w;
         if (!fonts[i])
-            fonts[i] = Resources.Load<Font>("Fonts/Barlow-" + w)
+            fonts[i] = Resources.Load<Font>("Fonts/Fredoka-" + w)
                        ?? Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         return fonts[i];
     }
@@ -99,7 +102,7 @@ public static class Util
     {
         t.font = FontFor(weight);
         t.fontStyle = FontStyle.Normal;
-        t.GetComponent<LetterSpacing>().Spacing = spacing;
+        t.GetComponent<LetterSpacing>().Spacing = spacing * TrackingScale;
     }
 
     public static Text MakeText(Transform parent, float anchorY, float offsetY, int size,
@@ -108,7 +111,7 @@ public static class Util
         var go = new GameObject("Text");
         go.transform.SetParent(parent, false);
         var t = go.AddComponent<Text>();
-        go.AddComponent<LetterSpacing>().Spacing = spacing; // antes do Shadow
+        go.AddComponent<LetterSpacing>().Spacing = spacing * TrackingScale; // antes do Shadow
         t.font = FontFor(weight);
         t.fontSize = size;
         t.fontStyle = FontStyle.Normal;
@@ -118,8 +121,9 @@ public static class Util
         t.horizontalOverflow = HorizontalWrapMode.Overflow;
         t.verticalOverflow = VerticalWrapMode.Overflow;
         var sh = go.AddComponent<Shadow>();
-        sh.effectColor = new Color(0f, 0f, 0.05f, 0.35f);
-        sh.effectDistance = new Vector2(0, -4);
+        // Sombra marrom logo abaixo: dá o volume de "letra de brinquedo" do HUD da referência
+        sh.effectColor = new Color(0.44f, 0.27f, 0.16f, 0.85f);
+        sh.effectDistance = new Vector2(0, -5);
         var rt = t.rectTransform;
         rt.anchorMin = rt.anchorMax = new Vector2(0.5f, anchorY);
         rt.anchoredPosition = new Vector2(0, offsetY);
@@ -170,7 +174,7 @@ public static class Util
         var go = new GameObject("Button");
         go.transform.SetParent(parent, false);
         var img = go.AddComponent<Image>();
-        img.sprite = Rounded();
+        img.sprite = PaintedPanel(); // madeira pintada: topo claro, borda inferior mais escura
         img.type = Image.Type.Sliced;
         img.color = color;
         var rt = img.rectTransform;
@@ -179,6 +183,12 @@ public static class Util
         rt.sizeDelta = size;
         var btn = go.AddComponent<Button>();
         btn.onClick.AddListener(onClick);
+        // Ao tocar, o botão escurece um pouco (como apertar uma peça de madeira)
+        var colors = btn.colors;
+        colors.pressedColor = new Color(0.82f, 0.82f, 0.82f);
+        colors.highlightedColor = new Color(1.04f, 1.04f, 1.04f);
+        btn.colors = colors;
+        AddDropShadow(go.transform);
 
         var text = MakeText(go.transform, 0.5f, 0, fontSize);
         text.text = label;
@@ -187,6 +197,82 @@ public static class Util
         trt.anchorMax = Vector2.one;
         trt.offsetMin = trt.offsetMax = Vector2.zero;
         return text;
+    }
+
+    static Sprite paintedPanel, pauseIcon;
+
+    // Peça de madeira pintada para botões e painéis (9-slice, em tons de cinza, tingida pela cor da Image):
+    // cantos bem arredondados, faixa clara no topo, veio horizontal sutil e "espessura" escura embaixo.
+    public static Sprite PaintedPanel()
+    {
+        if (paintedPanel) return paintedPanel;
+        const int size = 96, r = 28, lip = 9;
+        var t = new Texture2D(size, size) { filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp };
+        var rng = new System.Random(5);
+        var grain = new float[size];
+        for (int y = 0; y < size; y++) grain[y] = (float)rng.NextDouble();
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                float cx = Mathf.Clamp(x + 0.5f, r, size - r);
+                float cy = Mathf.Clamp(y + 0.5f, r, size - r);
+                float d = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), new Vector2(cx, cy));
+                float a = Mathf.Clamp01(r - d);
+                // Face de cima (acima da espessura) e a espessura embaixo
+                float faceCy = Mathf.Clamp(y + 0.5f, r + lip, size - r);
+                float faceD = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), new Vector2(cx, faceCy));
+                bool onFace = faceD <= r - 1f;
+                float lum;
+                if (onFace)
+                {
+                    float k = (y - lip) / (float)(size - lip);
+                    lum = Mathf.Lerp(0.9f, 1f, k);                                   // degradê suave
+                    if (faceD > r - 4f) lum *= y > size / 2 ? 1f : 0.94f;             // brilho no topo, sombra embaixo
+                    lum += (grain[y] - 0.5f) * 0.035f;                                // veio horizontal
+                }
+                else lum = 0.66f;                                                     // espessura da peça
+                t.SetPixel(x, y, new Color(lum, lum, lum, a));
+            }
+        t.Apply();
+        paintedPanel = Sprite.Create(t, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 100, 0,
+            SpriteMeshType.FullRect, new Vector4(r, r + lip, r, r));
+        return paintedPanel;
+    }
+
+    // Sombra macia projetada embaixo de um botão/painel (irmã anterior, mesma posição, deslocada para baixo)
+    public static void AddDropShadow(Transform target)
+    {
+        var src = (RectTransform)target;
+        var go = new GameObject("DropShadow", typeof(RectTransform));
+        go.transform.SetParent(src.parent, false);
+        go.transform.SetSiblingIndex(src.GetSiblingIndex());
+        var img = go.AddComponent<Image>();
+        // Mesma forma da peça (mesmo sprite e arredondamento), só deslocada para baixo e escurecida:
+        // assim a sombra nunca vira uma "caixa" atrás de peças bem arredondadas
+        var srcImg = target.GetComponent<Image>();
+        img.sprite = srcImg && srcImg.sprite ? srcImg.sprite : Rounded();
+        img.type = Image.Type.Sliced;
+        img.pixelsPerUnitMultiplier = srcImg ? srcImg.pixelsPerUnitMultiplier : 1f;
+        img.color = new Color(0.16f, 0.09f, 0.04f, 0.28f);
+        img.raycastTarget = false;
+        // Acompanha o alvo: posição, tamanho (o selo de recorde muda de largura) e se está ligado
+        var follower = target.gameObject.AddComponent<ShadowFollower>();
+        follower.shadow = go;
+        follower.offset = new Vector2(0, -7);
+        follower.Sync();
+    }
+
+    // Ícone de pausa: duas barras arredondadas
+    public static Sprite PauseIcon()
+    {
+        if (pauseIcon) return pauseIcon;
+        pauseIcon = DrawIcon((x, y) =>
+        {
+            var p = new Vector2(x, y);
+            return SegmentDistance(p, new Vector2(22, 16), new Vector2(22, 48)) < 6.5f
+                || SegmentDistance(p, new Vector2(42, 16), new Vector2(42, 48)) < 6.5f;
+        });
+        return pauseIcon;
     }
 
     static Sprite roundedOutline, block, hGradient;

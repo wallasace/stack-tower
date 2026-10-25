@@ -39,26 +39,30 @@ public class Shell : MonoBehaviour
     public enum State { Menu, Playing, Paused, Over }
 
     public static Shell I { get; private set; }
+    // Chamado quando aparece "novo recorde" (o jogo pode soltar confete, por exemplo)
+    public static System.Action OnNewRecord;
     public State Current { get; private set; }
     public bool Playing => Current == State.Playing;
     public int Best { get; private set; }
 
-    // Paleta da direção visual
-    public static readonly Color Ivory = new Color(0.95f, 0.92f, 0.86f);
-    public static readonly Color MutedBlue = new Color(0.56f, 0.64f, 0.76f);
-    public static readonly Color Gold = new Color(1f, 0.81f, 0.32f);
+    // Paleta "Toybox World": creme sobre o céu, madeira pintada nos painéis, marrom nos ícones
+    public static readonly Color Ivory = new Color(1f, 0.949f, 0.847f);          // #FFF2D8 creme
+    public static readonly Color MutedBlue = new Color(0.97f, 0.85f, 0.66f);     // creme amadeirado (textos secundários)
+    public static readonly Color Gold = new Color(1f, 0.79f, 0.3f);              // mensagens de acerto
+    public static readonly Color Brown = new Color(0.439f, 0.271f, 0.165f);      // #70452A ícones e texto em madeira clara
     public static readonly Color NightTop = new Color(0.07f, 0.15f, 0.29f);
     public static readonly Color NightBottom = new Color(0.03f, 0.07f, 0.15f);
-    static readonly Color ButtonText = new Color(0.04f, 0.12f, 0.2f);
-    static readonly Color CardColor = new Color(0.06f, 0.12f, 0.23f, 0.95f);
-    static readonly Color GhostColor = new Color(0.06f, 0.12f, 0.23f, 0.55f);
-    static readonly Color OutlineColor = new Color(0.56f, 0.64f, 0.76f, 0.45f);
-    static readonly Color Dim = new Color(0.01f, 0.03f, 0.08f, 0.6f);
+    static readonly Color ButtonText = new Color(1f, 0.949f, 0.847f);            // creme sobre o botão menta
+    static readonly Color CardColor = new Color(0.73f, 0.5f, 0.29f, 1f);         // tábua de madeira média
+    static readonly Color GhostColor = new Color(0.95f, 0.8f, 0.58f, 1f);        // madeira clara pintada (botões secundários)
+    static readonly Color OutlineColor = new Color(0.44f, 0.27f, 0.16f, 0.35f);  // contorno marrom suave
+    static readonly Color Dim = new Color(0.1f, 0.06f, 0.03f, 0.58f);            // escurece o jogo com tom quente
 
     IGame game;
     ShellTheme theme;
     GameObject menu, hud, pause, over;
-    Text title, menuBest, scoreText, msgText, overScore, overBest, newRecord, soundLabel;
+    Text title, scoreText, msgText, overScore, newRecord, soundLabel;
+    RecordPill menuBest, overBest;
     Image soundIcon;
     float msgTimer;
     bool newBest;
@@ -83,7 +87,7 @@ public class Shell : MonoBehaviour
         Best = PlayerPrefs.GetInt("best", 0);
         _ = Ranking.Entries; // carrega já (e migra o recorde antigo) antes de qualquer partida
         Util.EnsureEventSystem();
-        Util.MakeBackground(Camera.main, NightTop, NightBottom);
+        // O céu, o sol e o cenário vêm do mundo 3D (ToyWorld), sem fundo de UI
         var canvas = Util.MakeCanvas();
         // HUD e menu ficam colados nas bordas: dentro da área segura (notch, barra de gestos).
         // Os painéis escuros cobrem a tela toda; os cartões ficam centralizados.
@@ -91,21 +95,30 @@ public class Shell : MonoBehaviour
 
         // Partida: placar no topo, pausa no canto, dica no rodapé. O meio fica livre para jogar.
         hud = Util.MakePanel(safe, Color.clear).gameObject;
-        Label(hud.transform, t.scoreLabel, 0.935f, 34, Ivory, Util.Weight.SemiBold, 0.22f);
-        scoreText = Label(hud.transform, "0", 0.885f, 170, ScoreColor, Util.Weight.Bold, 0.02f);
+        Label(hud.transform, t.scoreLabel, 0.935f, 44, Ivory, Util.Weight.Bold, 0.12f);
+        scoreText = Label(hud.transform, "0", 0.88f, 190, ScoreColor, Util.Weight.Bold, 0.02f);
+        scoreText.GetComponent<Shadow>().effectDistance = new Vector2(0, -9); // número "grosso" como na referência
         msgText = Label(hud.transform, "", 0.62f, 44, Gold, Util.Weight.Bold, 0.08f);
         if (t.controlsHint) BuildControlsHint(hud.transform);
-        else Label(hud.transform, t.playHint, 0.035f, 32, Ivory, Util.Weight.Medium, 0.12f).color = Fade(Ivory, 0.8f);
-        var pauseBtn = Secondary(hud.transform, "II", new Vector2(1f, 1f), new Vector2(-100, -105), new Vector2(104, 104), Pause, 40);
-        Util.SetType(pauseBtn, Util.Weight.Bold, 0.05f);
+        else Outlined(Label(hud.transform, t.playHint, 0.035f, 34, Ivory, Util.Weight.SemiBold, 0.12f));
+        // Pausa: botão de madeira clara com ícone marrom
+        var pauseBtn = Secondary(hud.transform, "", new Vector2(1f, 1f), new Vector2(-100, -105), new Vector2(112, 112), Pause, 40);
+        var pauseIcon = new GameObject("Icon").AddComponent<Image>();
+        pauseIcon.transform.SetParent(pauseBtn.transform.parent, false);
+        pauseIcon.sprite = Util.PauseIcon();
+        pauseIcon.color = Brown;
+        pauseIcon.raycastTarget = false;
+        pauseIcon.rectTransform.anchoredPosition = new Vector2(0, 3); // compensa a "borda" de baixo do botão
+        pauseIcon.rectTransform.sizeDelta = new Vector2(52, 52);
 
         // Som: canto superior esquerdo, simétrico à pausa; ícone muda entre ondas e X
-        var soundBtn = Secondary(hud.transform, "", new Vector2(0f, 1f), new Vector2(100, -105), new Vector2(104, 104), ToggleSound, 40);
+        var soundBtn = Secondary(hud.transform, "", new Vector2(0f, 1f), new Vector2(100, -105), new Vector2(112, 112), ToggleSound, 40);
         soundIcon = new GameObject("Icon").AddComponent<Image>();
         soundIcon.transform.SetParent(soundBtn.transform.parent, false);
-        soundIcon.color = Ivory;
+        soundIcon.color = Brown;
         soundIcon.raycastTarget = false;
-        soundIcon.rectTransform.sizeDelta = new Vector2(60, 60);
+        soundIcon.rectTransform.anchoredPosition = new Vector2(0, 3);
+        soundIcon.rectTransform.sizeDelta = new Vector2(64, 64);
 
         // Menu: marca, título, frase, recorde; botão JOGAR embaixo, o jogo aparece no meio
         menu = Util.MakePanel(safe, Color.clear).gameObject;
@@ -128,26 +141,26 @@ public class Shell : MonoBehaviour
         Util.SetType(rankingBtn, Util.Weight.SemiBold, 0.1f);
         var creditsBtn = Secondary(menu.transform, L("CRÉDITOS", "CREDITS"), new Vector2(0.5f, 0.157f), new Vector2(320, 0), new Vector2(300, 84), ShowCredits, 26);
         Util.SetType(creditsBtn, Util.Weight.SemiBold, 0.1f);
-        Label(menu.transform, t.menuHint, 0.088f, 32, Ivory, Util.Weight.Medium, 0.12f).color = Fade(Ivory, 0.8f);
+        Outlined(Label(menu.transform, t.menuHint, 0.088f, 34, Ivory, Util.Weight.SemiBold, 0.12f));
 
         // Pausa: jogo escurecido + painel compacto
         pause = Util.MakePanel(canvas, Dim).gameObject;
-        var pcard = Card(pause.transform, new Vector2(700, 620));
-        Label(pcard, L("PAUSADO", "PAUSED"), 0.79f, 82, Ivory, Util.Weight.Bold, 0.08f);
-        Label(pcard, t.pausePhrase, 0.63f, 36, Ivory, Util.Weight.Medium, 0.06f);
-        Primary(pcard, L("CONTINUAR", "RESUME"), 0.4f, new Vector2(580, 128), Resume, 48);
-        Secondary(pcard, "MENU", new Vector2(0.5f, 0.16f), Vector2.zero, new Vector2(580, 108), GoToMenu, 40);
+        var pcard = Card(pause.transform, new Vector2(700, 680));
+        Label(pcard, L("PAUSADO", "PAUSED"), 0.8f, 82, Ivory, Util.Weight.Bold, 0.08f);
+        Label(pcard, t.pausePhrase, 0.66f, 36, Ivory, Util.Weight.Medium, 0.06f);
+        Primary(pcard, L("CONTINUAR", "RESUME"), 0.45f, new Vector2(580, 128), Resume, 48);
+        Secondary(pcard, "MENU", new Vector2(0.5f, 0.22f), Vector2.zero, new Vector2(580, 108), GoToMenu, 40);
 
         // Resultado
         over = Util.MakePanel(canvas, Dim).gameObject;
-        var ocard = Card(over.transform, new Vector2(720, 940));
+        var ocard = Card(over.transform, new Vector2(740, 1000));
         Label(ocard, L("FIM DE JOGO", "GAME OVER"), 0.9f, 64, Ivory, Util.Weight.Bold, 0.08f);
-        overScore = Label(ocard, "", 0.735f, 220, ScoreColor, Util.Weight.Bold, 0.02f);
-        Label(ocard, t.resultLabel, 0.6f, 42, Ivory, Util.Weight.Bold, 0.16f);
-        overBest = Pill(ocard, 0.485f);
-        newRecord = Label(ocard, L("NOVO RECORDE!", "NEW BEST!"), 0.395f, 38, Gold, Util.Weight.Bold, 0.08f);
-        Primary(ocard, L("JOGAR DE NOVO", "PLAY AGAIN"), 0.255f, new Vector2(600, 124), Play, 46);
-        Secondary(ocard, "MENU", new Vector2(0.5f, 0.1f), Vector2.zero, new Vector2(600, 104), GoToMenu, 38);
+        overScore = Label(ocard, "", 0.745f, 220, ScoreColor, Util.Weight.Bold, 0.02f);
+        Label(ocard, t.resultLabel, 0.615f, 42, Ivory, Util.Weight.Bold, 0.16f);
+        overBest = Pill(ocard, 0.515f);
+        newRecord = Label(ocard, L("NOVO RECORDE!", "NEW BEST!"), 0.44f, 38, Gold, Util.Weight.Bold, 0.08f);
+        Primary(ocard, L("JOGAR DE NOVO", "PLAY AGAIN"), 0.315f, new Vector2(600, 124), Play, 46);
+        Secondary(ocard, "MENU", new Vector2(0.5f, 0.16f), Vector2.zero, new Vector2(600, 104), GoToMenu, 38);
 
         // Créditos
         credits = Util.MakePanel(canvas, Dim).gameObject;
@@ -174,11 +187,11 @@ public class Shell : MonoBehaviour
             y -= 0.115f;
         }
         Entry(L("MÚSICA E EFEITOS SONOROS", "MUSIC AND SOUND EFFECTS"), string.IsNullOrEmpty(t.author) ? L("Seu nome", "Your name") : t.author);
-        Entry(L("FONTE", "TYPEFACE"), L("Barlow, de Jeremy Tribby", "Barlow by Jeremy Tribby"));
+        Entry(L("FONTE", "TYPEFACE"), L("Fredoka, de Milena Brandão", "Fredoka by Milena Brandão"));
         Entry(L("FEITO COM", "MADE WITH"), "Unity");
         var license = Label(ccard,
-            L("Fonte Barlow © 2017 The Barlow Project Authors\n(https://github.com/jpt/barlow), licenciada sob a\nSIL Open Font License 1.1 (scripts.sil.org/OFL).",
-              "Barlow font © 2017 The Barlow Project Authors\n(https://github.com/jpt/barlow), licensed under the\nSIL Open Font License 1.1 (scripts.sil.org/OFL)."),
+            L("Fonte Fredoka © 2016 The Fredoka Project Authors\n(https://github.com/hafontia/Fredoka-One), licenciada sob a\nSIL Open Font License 1.1 (scripts.sil.org/OFL).",
+              "Fredoka font © 2016 The Fredoka Project Authors\n(https://github.com/hafontia/Fredoka-One), licensed under the\nSIL Open Font License 1.1 (scripts.sil.org/OFL)."),
             0.25f, 24, MutedBlue, Util.Weight.Medium);
         license.lineSpacing = 1.15f;
         Secondary(ccard, L("VOLTAR", "BACK"), new Vector2(0.5f, 0.09f), Vector2.zero, new Vector2(600, 104), CloseCredits, 38);
@@ -201,7 +214,7 @@ public class Shell : MonoBehaviour
         var img = new GameObject("Icon").AddComponent<Image>();
         img.transform.SetParent(text.transform.parent, false);
         img.sprite = icon;
-        img.color = Ivory;
+        img.color = Brown;
         img.preserveAspect = true;
         img.raycastTarget = false;
         img.rectTransform.sizeDelta = new Vector2(44, 44);
@@ -272,29 +285,42 @@ public class Shell : MonoBehaviour
         Sfx.Play("click");
         RefreshRanking();
         ranking.SetActive(true);
+        menu.SetActive(false); // nada do menu aparecendo atrás do painel
     }
 
     void CloseRanking()
     {
         Sfx.Play("click");
         ranking.SetActive(false);
+        menu.SetActive(true);
     }
 
     void ShowCredits()
     {
         Sfx.Play("click");
         credits.SetActive(true);
+        menu.SetActive(false); // nada do menu aparecendo atrás do painel
     }
 
     void CloseCredits()
     {
         Sfx.Play("click");
         credits.SetActive(false);
+        menu.SetActive(true);
     }
 
     // ---------- Peças visuais ----------
 
     static Color Fade(Color c, float a) => new Color(c.r, c.g, c.b, a);
+
+    // Contorno marrom em volta do texto: legível sobre o céu claro e sobre o chão de madeira
+    static Text Outlined(Text t)
+    {
+        var o = t.gameObject.AddComponent<Outline>();
+        o.effectColor = new Color(0.36f, 0.21f, 0.12f, 0.9f);
+        o.effectDistance = new Vector2(2.5f, -2.5f);
+        return t;
+    }
 
     static Text Label(Transform parent, string text, float anchorY, int size, Color color,
         Util.Weight weight = Util.Weight.Bold, float spacing = 0f)
@@ -305,26 +331,14 @@ public class Shell : MonoBehaviour
         return t;
     }
 
-    // Botão principal: cor de destaque com brilho suave em volta e topo mais claro
+    // Botão principal: madeira pintada na cor de destaque (menta), texto creme com sombra marrom
     Text Primary(Transform parent, string label, float anchorY, Vector2 size, UnityEngine.Events.UnityAction action, int font)
     {
         var text = Util.MakeButton(parent, label, new Vector2(0.5f, anchorY), Vector2.zero, size, theme.accent, action, font);
-        var button = text.transform.parent;
-
-        // Brilho atrás do botão: irmão anterior, mesma âncora, um pouco maior
-        var glow = new GameObject("Glow").AddComponent<Image>();
-        glow.transform.SetParent(parent, false);
-        glow.transform.SetSiblingIndex(button.GetSiblingIndex());
-        glow.sprite = Util.SoftRect();
-        glow.type = Image.Type.Sliced;
-        glow.raycastTarget = false;
-        glow.rectTransform.anchorMin = glow.rectTransform.anchorMax = new Vector2(0.5f, anchorY);
-        buttonGlows.Add((glow, size));
-        ApplyButtonGlow(glow, size);
-
         text.color = ButtonText;
-        text.GetComponent<Shadow>().enabled = false;
-        Util.SetType(text, Util.Weight.Bold, 0.14f);
+        text.GetComponent<Shadow>().effectColor = new Color(0.05f, 0.3f, 0.28f, 0.9f); // sombra menta escura
+        text.rectTransform.offsetMin = new Vector2(0, 6); // centraliza acima da "borda" de baixo
+        Util.SetType(text, Util.Weight.Bold, 0.1f);
         return text;
     }
 
@@ -357,10 +371,10 @@ public class Shell : MonoBehaviour
         UnityEngine.Events.UnityAction action, int font)
     {
         var text = Util.MakeButton(parent, label, anchor, offset, size, GhostColor, action, font);
-        text.color = Ivory;
+        text.color = Brown;
         text.GetComponent<Shadow>().enabled = false;
-        Util.SetType(text, Util.Weight.Medium, 0.16f);
-        Util.AddOutline(text.transform.parent, OutlineColor);
+        Util.SetType(text, Util.Weight.SemiBold, 0.12f);
+        text.rectTransform.offsetMin = new Vector2(0, 6); // centraliza acima da "borda" de baixo
         return text;
     }
 
@@ -369,34 +383,46 @@ public class Shell : MonoBehaviour
         var go = new GameObject("Card");
         go.transform.SetParent(parent, false);
         var img = go.AddComponent<Image>();
-        img.sprite = Util.Rounded();
+        img.sprite = Util.PaintedPanel(); // tábua com topo claro e borda inferior escura
         img.type = Image.Type.Sliced;
         img.color = CardColor;
         var rt = img.rectTransform;
         rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
         rt.sizeDelta = size;
-        Util.AddOutline(go.transform, new Color(1f, 1f, 1f, 0.1f));
+        Util.AddDropShadow(go.transform);
         return go.transform;
     }
 
     // Selo "RECORDE 28" com contorno
-    static Text Pill(Transform parent, float anchorY)
+    // Selo de recorde: rótulo e número em textos separados, centralizados juntos na face da peça
+    // (acima da "espessura" de baixo) e alinhados pelo meio, independente do tamanho do número
+    class RecordPill { public Text label, value; public RectTransform face; }
+
+    static RecordPill Pill(Transform parent, float anchorY)
     {
         var go = new GameObject("Pill");
         go.transform.SetParent(parent, false);
         var img = go.AddComponent<Image>();
-        img.sprite = Util.Rounded();
+        img.sprite = Util.PaintedPanel();
         img.type = Image.Type.Sliced;
         img.pixelsPerUnitMultiplier = 0.6f; // cantos bem redondos
         img.color = GhostColor;
         img.raycastTarget = false;
         var rt = img.rectTransform;
         rt.anchorMin = rt.anchorMax = new Vector2(0.5f, anchorY);
-        rt.sizeDelta = new Vector2(340, 88);
-        Util.AddOutline(go.transform, OutlineColor, 0.6f);
-        var t = Util.MakeText(go.transform, 0.5f, 0, 30, Util.Weight.SemiBold, 0.14f);
-        t.GetComponent<Shadow>().enabled = false;
-        return t;
+        rt.sizeDelta = new Vector2(300, 84);
+        Util.AddDropShadow(go.transform);
+
+        var pill = new RecordPill { face = rt };
+        pill.label = Util.MakeText(go.transform, 0.5f, 0, 30, Util.Weight.Bold, 0.14f);
+        pill.label.color = Brown;
+        pill.value = Util.MakeText(go.transform, 0.5f, 0, 46, Util.Weight.Bold, 0.02f);
+        foreach (var t in new[] { pill.label, pill.value })
+        {
+            t.GetComponent<Shadow>().enabled = false;
+            t.rectTransform.sizeDelta = new Vector2(260, 80);
+        }
+        return pill;
     }
 
     static void BuildBrand(Transform parent, float anchorY, Color[] colors)
@@ -456,8 +482,19 @@ public class Shell : MonoBehaviour
         line.rectTransform.sizeDelta = new Vector2(3, 120);
     }
 
-    void SetRecordText(Text t) =>
-        t.text = $"<color={Util.Hex(Ivory)}>{L("RECORDE", "BEST")}</color>  <color={Util.Hex(RecordColor)}><size=50>{Format(Best)}</size></color>";
+    void SetRecordText(RecordPill p)
+    {
+        p.label.text = L("RECORDE", "BEST");
+        p.value.text = Format(Best);
+        p.value.color = RecordColor;
+        // Mede os dois textos e centraliza o conjunto; sobe 5 para compensar a borda inferior da peça
+        const float gap = 14f, lift = 5f;
+        float lw = p.label.preferredWidth, vw = p.value.preferredWidth;
+        float total = lw + gap + vw;
+        p.label.rectTransform.anchoredPosition = new Vector2(-total / 2f + lw / 2f, lift);
+        p.value.rectTransform.anchoredPosition = new Vector2(total / 2f - vw / 2f, lift + 1f);
+        p.face.sizeDelta = new Vector2(Mathf.Max(240f, total + 90f), p.face.sizeDelta.y);
+    }
 
     // ---------- Fluxo ----------
 
@@ -605,6 +642,6 @@ public class Shell : MonoBehaviour
         newRecord.gameObject.SetActive(newBest || rankPosition > 0);
         Show(over);
         Juice.Pop(overScore.transform, 0.3f, 0.3f);
-        if (newBest) Sfx.Play("record");
+        if (newBest) { Sfx.Play("record"); OnNewRecord?.Invoke(); }
     }
 }
